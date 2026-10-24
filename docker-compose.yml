@@ -1,0 +1,141 @@
+# Full Gamex backend for local development (SPEC-iac §9).
+# Prerequisites: sibling service repos checked out next to this one, and a .env file:
+#   ./scripts/generate-dev-env.sh        # creates .env with a dev JWT key pair
+#   docker compose up --build
+# Smoke test across all services:  node scripts/smoke-test.mjs
+
+x-service-defaults: &service-defaults
+  env_file: .env
+  restart: unless-stopped
+
+x-common-env: &common-env
+  ASPNETCORE_ENVIRONMENT: Development
+  AWS_DEFAULT_REGION: eu-central-1
+  AWS_SERVICE_URL: http://localstack:4566
+  JWT_ISSUER: gamex-user-library
+  JWT_AUDIENCE: gamex
+
+x-mysql-healthcheck: &mysql-healthcheck
+  test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-plocaldev"]
+  interval: 5s
+  retries: 30
+
+services:
+
+  # ── Game Catalog ──────────────────────────────────────────────────────
+  game-catalog-svc:
+    <<: *service-defaults
+    image: gamex/game-catalog-svc:local
+    build:
+      context: ../gamex-game-catalog-svc
+    ports: ["5001:8080"]
+    environment:
+      <<: *common-env
+      DB_CONNECTION_STRING: "Server=catalog-db;Database=games_db;User=root;Password=localdev;"
+      SQS_LIBRARY_EVENTS_URL: "http://localstack:4566/000000000000/gamex-library-events"
+      SQS_CATALOG_EVENTS_URL: "http://localstack:4566/000000000000/gamex-catalog-events"
+      S3_MEDIA_BUCKET: gamex-media
+      S3_MEDIA_PREFIX: dev/
+      # LocalStack serves the bucket directly in place of Cloudflare.
+      CLOUDFLARE_MEDIA_BASE_URL: "http://localhost:4566/gamex-media"
+    depends_on:
+      catalog-db: { condition: service_healthy }
+      localstack: { condition: service_healthy }
+
+  catalog-db:
+    image: mysql:8.0
+    environment: { MYSQL_DATABASE: games_db, MYSQL_ROOT_PASSWORD: localdev }
+    ports: ["3307:3306"]
+    volumes: [catalog-db-data:/var/lib/mysql]
+    healthcheck: *mysql-healthcheck
+
+  # ── User Library ──────────────────────────────────────────────────────
+  user-library-svc:
+    <<: *service-defaults
+    image: gamex/user-library-svc:local
+    build:
+      context: ../gamex-user-library-svc
+    ports: ["5002:8080"]
+    environment:
+      <<: *common-env
+      DB_CONNECTION_STRING: "Server=library-db;Database=library_db;User=root;Password=localdev;"
+      SQS_LIBRARY_EVENTS_URL: "http://localstack:4566/000000000000/gamex-library-events"
+      SQS_ACTIVITY_EVENTS_URL: "http://localstack:4566/000000000000/gamex-activity-events"
+      SQS_CATALOG_EVENTS_URL: "http://localstack:4566/000000000000/gamex-catalog-events"
+      SQS_RETRY_DELAY_SECONDS: "2"
+      FRONTEND_BASE_URL: "http://localhost:5173"
+      PUBLIC_API_BASE_URL: "http://localhost:5002"
+    depends_on:
+      library-db: { condition: service_healthy }
+      localstack: { condition: service_healthy }
+
+  library-db:
+    image: mysql:8.0
+    environment: { MYSQL_DATABASE: library_db, MYSQL_ROOT_PASSWORD: localdev }
+    ports: ["3308:3306"]
+    volumes: [library-db-data:/var/lib/mysql]
+    healthcheck: *mysql-healthcheck
+
+  # ── Messaging ─────────────────────────────────────────────────────────
+  messaging-svc:
+    <<: *service-defaults
+    image: gamex/messaging-svc:local
+    build:
+      context: ../gamex-messaging-svc
+    ports: ["5003:8080"]
+    environment:
+      <<: *common-env
+      DB_CONNECTION_STRING: "Server=messaging-db;Database=messaging_db;User=root;Password=localdev;"
+      SQS_ACTIVITY_EVENTS_URL: "http://localstack:4566/000000000000/gamex-activity-events"
+    depends_on:
+      messaging-db: { condition: service_healthy }
+      localstack: { condition: service_healthy }
+
+  messaging-db:
+    image: mysql:8.0
+    environment: { MYSQL_DATABASE: messaging_db, MYSQL_ROOT_PASSWORD: localdev }
+    ports: ["3309:3306"]
+    volumes: [messaging-db-data:/var/lib/mysql]
+    healthcheck: *mysql-healthcheck
+
+  # ── Notifications ─────────────────────────────────────────────────────
+  notification-svc:
+    <<: *service-defaults
+    image: gamex/notification-svc:local
+    build:
+      context: ../gamex-notification-svc
+    ports: ["5004:8080"]
+    environment:
+      <<: *common-env
+      DB_CONNECTION_STRING: "Server=notification-db;Database=notifications_db;User=root;Password=localdev;"
+      SQS_ACTIVITY_EVENTS_URL: "http://localstack:4566/000000000000/gamex-activity-events"
+    depends_on:
+      notification-db: { condition: service_healthy }
+      localstack: { condition: service_healthy }
+
+  notification-db:
+    image: mysql:8.0
+    environment: { MYSQL_DATABASE: notifications_db, MYSQL_ROOT_PASSWORD: localdev }
+    ports: ["3310:3306"]
+    volumes: [notification-db-data:/var/lib/mysql]
+    healthcheck: *mysql-healthcheck
+
+  # ── LocalStack (SQS + S3 emulation) ───────────────────────────────────
+  localstack:
+    image: localstack/localstack:3
+    ports: ["4566:4566"]
+    environment:
+      SERVICES: sqs,s3
+      AWS_DEFAULT_REGION: eu-central-1
+    volumes:
+      - ./localstack-init:/etc/localstack/init/ready.d
+    healthcheck:
+      test: ["CMD", "awslocal", "sqs", "get-queue-url", "--region", "eu-central-1", "--queue-name", "gamex-catalog-events"]
+      interval: 5s
+      retries: 30
+
+volumes:
+  catalog-db-data:
+  library-db-data:
+  messaging-db-data:
+  notification-db-data:

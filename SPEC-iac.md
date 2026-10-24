@@ -397,3 +397,38 @@ All backend services available at:
 ```
 
 The Docker Compose `build.context` paths in `docker-compose.yml` use relative `../` paths and expect this layout.
+
+---
+
+## 11. Implementation Notes (2026-10-24)
+
+### 11.1 Local stack (implemented)
+
+- `docker-compose.yml` runs all four services, four MySQL 8 databases and one LocalStack (SQS + S3). Every service runs with `ASPNETCORE_ENVIRONMENT=Development` (migrations on startup) and `JWT_ISSUER=gamex-user-library`, `JWT_AUDIENCE=gamex`.
+- `scripts/generate-dev-env.sh` creates `.env` with a fresh RS256 key pair (single-line PEMs with `\n` escapes, which all services accept). `.env` is git-ignored.
+- `localstack-init/01-create-resources.sh` creates all three queues with DLQs and the redrive policy (`maxReceiveCount` 3) in `eu-central-1` — the region the services sign requests for — plus the `gamex-media` bucket.
+- `scripts/smoke-test.mjs` (Node 18+) checks every cross-service flow end to end: catalog replay → library replica, library deltas → catalog stats, wishlist match → notification, listing contact token → conversation, message → notification, two-sided completion → rating notifications → rating.
+
+```bash
+./scripts/generate-dev-env.sh
+docker compose up -d --build
+node scripts/smoke-test.mjs
+```
+
+### 11.2 Task definition settings to add (per service)
+
+| Service | Variables | Source |
+|---|---|---|
+| All | `JWT_ISSUER` = `gamex-user-library`, `JWT_AUDIENCE` = `gamex` | task definition |
+| All | `DB_MIGRATE_ON_STARTUP` (or run migrations as a separate deploy step) | task definition |
+| Game Catalog | `S3_MEDIA_PREFIX` (`dev/`, `prod/`), `SQS_RETRY_DELAY_SECONDS`, `NIGHTLY_REFRESH_*` | task definition |
+| User Library | `JWT_PRIVATE_KEY` | Secrets Manager `gx/{env}/jwt-private-key` |
+| User Library | `SQS_CATALOG_EVENTS_URL`, `PUBLIC_API_BASE_URL`, `LISTING_LIFETIME_DAYS`, `AUTH_RATE_LIMIT_PER_MINUTE` | SSM / task definition |
+| Messaging | `SEND_RATE_LIMIT_PER_MINUTE` | task definition |
+
+### 11.3 Open infrastructure items
+
+- **CORS**: the frontend (`gamex.rs`) and API (`api.gamex.rs`) are different origins; the API gateway or each service must allow the frontend origin with credentials (the refresh cookie).
+- **SignalR backplane**: Messaging and Notifications push to connected clients of the same instance only; with more than one task per service add Redis (ElastiCache) as a SignalR backplane, or keep one task until then.
+- **Email**: password reset emails are logged, not sent; add SES (and its IAM permission for the User Library task role).
+- **ALB routing**: path-based rules — `/api/v1/games*`, `/api/v1/platforms`, `/api/v1/genres`, `/api/v1/admin/catalog-events*` → Game Catalog; `/api/v1/conversations*`, `/hubs/messaging` → Messaging; `/api/v1/notifications*`, `/hubs/notifications` → Notifications; everything else under `/api/v1` → User Library. WebSockets need sticky sessions or the backplane.
