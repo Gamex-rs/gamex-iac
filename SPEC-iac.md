@@ -157,6 +157,9 @@ Each module instance provisions:
 |---|---|---|
 | `gx-{env}-library-events` | `gx-{env}-library-events-dlq` | 3 |
 | `gx-{env}-activity-events` | `gx-{env}-activity-events-dlq` | 3 |
+| `gx-{env}-catalog-events` | `gx-{env}-catalog-events-dlq` | 3 |
+
+`catalog-events` is published by the Game Catalog Service and consumed by the User Library Service (catalog replica). IAM: Game Catalog task role gets `sqs:SendMessage`; User Library task role gets `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:ChangeMessageVisibility`, `sqs:GetQueueAttributes`.
 
 Each module instance provisions the main queue and the DLQ, with a redrive policy linking them.
 
@@ -198,6 +201,7 @@ Secrets and parameters are namespaced by environment: `gx/{env}/`.
 | `gx/{env}/jwt-public-key` | RS256 public key PEM |
 | `gx/{env}/sqs/library-events-url` | SQS queue URL |
 | `gx/{env}/sqs/activity-events-url` | SQS queue URL |
+| `gx/{env}/sqs/catalog-events-url` | SQS queue URL |
 | `gx/{env}/s3/media-bucket` | Bucket name |
 | `gx/{env}/cloudflare/media-base-url` | Cloudflare media URL |
 | `gx/{env}/frontend-base-url` | Frontend origin URL |
@@ -248,6 +252,7 @@ services:
     environment:
       DB_CONNECTION_STRING: "Server=catalog-db;Database=games_db;User=root;Password=localdev;"
       SQS_LIBRARY_EVENTS_URL: "http://localstack:4566/000000000000/gamex-library-events"
+      SQS_CATALOG_EVENTS_URL: "http://localstack:4566/000000000000/gamex-catalog-events"
     depends_on: [catalog-db, localstack]
 
   catalog-db:
@@ -268,6 +273,7 @@ services:
       DB_CONNECTION_STRING: "Server=library-db;Database=library_db;User=root;Password=localdev;"
       SQS_LIBRARY_EVENTS_URL: "http://localstack:4566/000000000000/gamex-library-events"
       SQS_ACTIVITY_EVENTS_URL: "http://localstack:4566/000000000000/gamex-activity-events"
+      SQS_CATALOG_EVENTS_URL: "http://localstack:4566/000000000000/gamex-catalog-events"
     depends_on: [library-db, localstack]
 
   library-db:
@@ -341,6 +347,8 @@ awslocal sqs create-queue --queue-name gamex-library-events
 awslocal sqs create-queue --queue-name gamex-library-events-dlq
 awslocal sqs create-queue --queue-name gamex-activity-events
 awslocal sqs create-queue --queue-name gamex-activity-events-dlq
+awslocal sqs create-queue --queue-name gamex-catalog-events
+awslocal sqs create-queue --queue-name gamex-catalog-events-dlq
 ```
 
 ### Local `.env` file (not committed)
